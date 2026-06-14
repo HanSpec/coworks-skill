@@ -24,9 +24,9 @@ description: "Use when the user gives a coworks node id to work on. Triggers on 
 호출 측 프로젝트의 `.env`에 위 두 변수가 있으면 그대로 쓴다. 둘 다 없으면 사용자에게
 "coworks 토큰/BASE_URL 환경변수가 필요합니다(coworks `/me`에서 발급)"라고 알리고 중단한다.
 
-> **상태 변경(DONE) 주의**: 현재 coworks에는 node status를 바꾸는 토큰 API가 없다.
-> 완료 처리는 coworks 레포에서 DB를 직접 갱신해야 한다(아래 Step 5). 따라서 이 스킬의
-> 완료 단계는 **coworks 레포(`hanspec/coworks`)에 접근 가능한 환경**에서만 동작한다.
+> **이 스킬은 오직 coworks HTTP API만 사용한다.** 조회·task 등록·완료(DONE) 처리 모두
+> 토큰 API로 한다. **coworks DB나 coworks 레포 소스에 직접 접근하지 않는다** — 호출 측
+> 프로젝트(외부)는 coworks 내부에 접근 권한이 없는 게 정상이며, 그럴 필요도 없다.
 
 ---
 
@@ -60,13 +60,12 @@ curl -s "$HANSPEC_COWORKS_BASE_URL/api/nodes/<id>/tasks" \
 
 ### Step 3: 구현
 
-coworks 레포에서 요구사항을 구현한다. 산출물 위치는 `role`/도메인에 따른다(루트 CLAUDE.md
-"Role별 산출물 위치" 참조). 프론트엔드면 `src/app/...`·`src/components/...` 등.
+**현재 작업 중인 프로젝트**에서 요구사항을 구현한다. 요구사항 내용이 어느 코드베이스의 것인지는
+node의 module/feature/description 맥락으로 판단한다(요구사항이 다른 프로젝트의 것이면 그 점을
+사용자에게 확인).
 
-- **검증**: `pnpm run build`로 컴파일 확인. 가능하면 로컬 dev 서버로 실제 동작까지 확인한다
-  (세션 쿠키가 필요한 페이지는 `SESSION_SECRET`으로 검증용 쿠키 생성 — 아래 참고).
-- **비공개 프로젝트 언급 금지**: coworks는 오픈소스다. 코드·문서·커밋 메시지에 호출 측
-  비공개 프로젝트 이름/경로를 남기지 않는다. 커밋 전 `git grep -i <비공개프로젝트명>`으로 확인.
+- **검증**: 해당 프로젝트의 빌드/테스트로 확인하고, 가능하면 실제 동작까지 본다.
+- 커밋·푸시는 해당 프로젝트의 규칙을 따른다. 커밋 메시지에 요구사항 번호(`#<id>`)를 남긴다.
 
 ### Step 4: 관련 컴포넌트를 task로 등록
 
@@ -92,65 +91,35 @@ endpoint에는 파일 경로를 적는다(여러 개면 콤마로 구분). `{{EN
 
 ### Step 5: 완료(DONE) 처리
 
-토큰 API가 없으므로 coworks 레포에서 DB를 직접 갱신한다(웹 액션 `updateNodeStatus`와 동일 규칙).
+**`PATCH /api/nodes/:id`에 `status`를 보내 완료 처리한다.** (DB 직접 접근 불필요.)
 
-1. 예약된 완료 알림 확인: `completeNotification`에 trigger/target이 이 node인 행이 있으면
-   웹과 동일하게 발송 처리도 필요(없으면 status만 갱신해도 됨).
-2. 비DONE→DONE 전환 시 `completedAt: new Date()` 함께 기록(DONE 해제는 `completedAt: null`).
-
-coworks 레포 루트에서 임시 tsx 스크립트로 갱신하고, 쓰고 나서 삭제한다:
-
-```ts
-// tmp-done.mts  (실행: pnpm dlx tsx --env-file=.env tmp-done.mts; 끝나면 rm)
-import { PrismaClient } from "./src/generated/prisma/client.ts";
-import { PrismaPg } from "@prisma/adapter-pg";
-const prisma = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }),
-});
-const noti = await prisma.completeNotification.findMany({
-  where: { OR: [{ triggerNodeId: <id> }, { targetNodeId: <id> }] },
-});
-console.log("notifications:", JSON.stringify(noti));
-const updated = await prisma.node.update({
-  where: { id: <id> },
-  data: { status: "DONE", completedAt: new Date() },
-  select: { id: true, status: true, completedAt: true },
-});
-console.log("updated:", JSON.stringify(updated));
-await prisma.$disconnect();
+```bash
+curl -s -X PATCH "$HANSPEC_COWORKS_BASE_URL/api/nodes/<id>" \
+  -H "Authorization: Bearer $HANSPEC_COWORKS_ACCESSTOKEN" -H "Content-Type: application/json" \
+  -d '{"status":"DONE"}'
 ```
+
+- `status`는 REQUIREMENT 노드만 변경 가능. 비DONE→DONE이면 서버가 `completedAt` 기록과
+  예약된 완료 알림 발송까지 처리한다(웹 UI와 동일 규칙). 호출 측이 신경 쓸 게 없다.
+- 응답 `{ ok:true, node:{ id, status:"DONE", completedAt } }`로 결과를 확인한다.
+- `422`(REQUIREMENT 아님)/`403`(권한)/`401`(토큰)이면 그대로 사용자에게 보고한다.
 
 ### Step 6: 커밋·푸시 + 결과 보고
 
 - 논리적 작업 단위로 커밋한다(coworks 규칙: 매 작업마다 커밋). 커밋 전 비공개 프로젝트
   언급 재확인. 커밋 메시지에 요구사항 번호(`#<id>`)를 남긴다.
 - 사용자에게 보고: 구현 내용(파일), 등록한 task 목록(id·name·endpoint), DONE 처리 결과,
-  검증 결과(빌드/실측). 관련 요구사항을 참고했으면 그 점도 명시.
-
----
-
-## 참고: 세션 쿠키가 필요한 페이지 실측
-
-로그인 필요 페이지는 coworks `SESSION_SECRET`으로 검증용 쿠키를 만들어 curl로 확인한다.
-
-```bash
-COOKIE=$(node -e '
-const { createHmac } = require("node:crypto");
-const payload = `<memberId>.${Date.now()}`;
-const sig = createHmac("sha256", process.env.SESSION_SECRET).update(payload).digest("base64url");
-console.log(`${payload}.${sig}`);
-')
-curl -s -b "coworks_session=$COOKIE" "$HANSPEC_COWORKS_BASE_URL/project/<pid>/..."
-```
+  검증 결과. 관련 요구사항을 참고했으면 그 점도 명시.
 
 ---
 
 ## 주의사항
 
+- **이 스킬은 coworks HTTP API만 쓴다.** coworks DB·소스에 직접 접근하지 않는다(외부
+  프로젝트에서도 동작해야 한다). 조회·task 등록·완료 처리 모두 토큰 API로 한다.
 - **REQUIREMENT 레벨**만 작업 대상이다. MODULE/FEATURE id가 오면 의도를 사용자에게 확인.
 - `related`(관련 요구사항)는 항상 확인한다 — 같은 기능을 다른 node가 이미 구현한 경우 그
   패턴을 재사용해 일관성을 유지한다.
-- coworks는 **오픈소스**다. 비공개 협업 프로젝트의 이름·경로를 어떤 산출물에도 남기지 않는다.
-- 완료 처리(Step 5)는 coworks 레포 DB 접근이 가능한 환경에서만 동작한다. 불가하면 task
-  등록까지만 하고, status는 사용자가 웹 UI에서 바꾸도록 안내한다.
-- 되돌리기 어려운 작업(DB 변경 등) 외에는 사용자 확인 없이 끝까지 진행한다.
+- 비공개 프로젝트의 이름·경로를 공개 산출물(공개 레포 코드·문서·커밋)에 남기지 않는다.
+- 토큰이 만료(`401`)면 coworks `/me`에서 재발급하도록 안내한다.
+- 되돌리기 어려운 외부 영향(공개 푸시 등) 외에는 사용자 확인 없이 끝까지 진행한다.
