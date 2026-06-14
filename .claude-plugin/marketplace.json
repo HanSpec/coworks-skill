@@ -1,0 +1,14 @@
+{
+  "name": "coworks-marketplace",
+  "owner": {
+    "name": "arahansa"
+  },
+  "plugins": [
+    {
+      "name": "coworks",
+      "source": "./coworks",
+      "description": "coworks node id로 요구사항을 조회→구현→task 등록→완료 처리하는 작업 자동화 스킬",
+      "version": "1.0.0"
+    }
+  ]
+}
