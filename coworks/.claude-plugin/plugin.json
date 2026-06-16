@@ -1,7 +1,7 @@
 {
   "name": "coworks",
   "description": "coworks node id로 요구사항을 조회→구현→task 등록→완료(DONE) 처리까지 자동화하는 스킬",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "arahansa"
   }
